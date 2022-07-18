@@ -176,7 +176,7 @@ final class BatchSpanProcessor implements SpanProcessorInterface
     {
         if ($worker = $this->worker) {
             $this->worker = null;
-            $worker->resume(true);
+            $worker->resume();
         }
     }
 }

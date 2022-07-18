@@ -8,7 +8,7 @@ use Amp\Cancellation;
 
 interface SpanProcessorInterface extends \OpenTelemetry\SDK\Trace\SpanProcessorInterface
 {
-    public function forceFlush(?Cancellation $cancellation = null): bool;
-
     public function shutdown(?Cancellation $cancellation = null): bool;
+
+    public function forceFlush(?Cancellation $cancellation = null): bool;
 }
