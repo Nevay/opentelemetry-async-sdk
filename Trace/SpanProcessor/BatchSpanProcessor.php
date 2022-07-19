@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\Async\SDK\Trace\SpanProcessor;
 
+use function Amp\async;
 use Amp\Cancellation;
 use Amp\CancelledException;
-use Amp\DeferredFuture;
+use Amp\Future;
 use Amp\TimeoutCancellation;
+use function Amp\weakClosure;
+use function array_key_last;
+use function assert;
 use function count;
-use function intdiv;
+use InvalidArgumentException;
 use OpenTelemetry\Async\SDK\Trace\SpanExporterInterface;
 use OpenTelemetry\Async\SDK\Trace\SpanProcessorInterface;
 use OpenTelemetry\Context\Context;
@@ -17,25 +21,25 @@ use OpenTelemetry\SDK\Trace\ReadableSpanInterface;
 use OpenTelemetry\SDK\Trace\ReadWriteSpanInterface;
 use OpenTelemetry\SDK\Trace\SpanDataInterface;
 use Revolt\EventLoop;
-use Revolt\EventLoop\Suspension;
-use SplQueue;
-use WeakReference;
+use function sprintf;
 
+/**
+ * @see https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/sdk.md#batching-processor
+ */
 final class BatchSpanProcessor implements SpanProcessorInterface
 {
     private SpanExporterInterface $spanExporter;
     private int $maxQueueSize;
-    private int $maxBatchSize;
     private float $scheduledDelay;
     private float $exportTimeout;
     private int $maxExportBatchSize;
+    private string $scheduledDelayCallbackId;
 
-    /** @var SplQueue<list<SpanDataInterface>> */
-    private SplQueue $queue;
+    private int $queueSize = 0;
     /** @var list<SpanDataInterface> */
     private array $batch = [];
-    private ?Suspension $worker = null;
-    private ?DeferredFuture $flush = null;
+    /** @var array<int, Future> */
+    private array $pending = [];
 
     private bool $closed = false;
 
@@ -46,21 +50,38 @@ final class BatchSpanProcessor implements SpanProcessorInterface
         int $exportTimeoutMillis = 30000,
         int $maxExportBatchSize = 512,
     ) {
+        if ($maxQueueSize < 0) {
+            throw new InvalidArgumentException(sprintf('Maximum queue size (%d) must be greater than or equal to zero', $maxQueueSize));
+        }
+        if ($scheduledDelayMillis < 0) {
+            throw new InvalidArgumentException(sprintf('Scheduled delay (%d) must be greater than or equal to zero', $scheduledDelayMillis));
+        }
+        if ($exportTimeoutMillis < 0) {
+            throw new InvalidArgumentException(sprintf('Export timeout (%d) must be greater than or equal to zero', $exportTimeoutMillis));
+        }
+        if ($maxExportBatchSize < 0) {
+            throw new InvalidArgumentException(sprintf('Maximum export batch size (%d) must be greater than or equal to zero', $maxExportBatchSize));
+        }
+        if ($maxExportBatchSize > $maxQueueSize) {
+            throw new InvalidArgumentException(sprintf('Maximum export batch size (%d) must be less than or equal to maximum queue size (%d)', $maxExportBatchSize, $maxQueueSize));
+        }
+
         $this->spanExporter = $spanExporter;
-        $this->maxQueueSize = intdiv($maxQueueSize, $maxExportBatchSize);
-        $this->maxBatchSize = $maxQueueSize % $maxExportBatchSize;
+        $this->maxQueueSize = $maxQueueSize;
         $this->scheduledDelay = $scheduledDelayMillis / 1000;
         $this->exportTimeout = $exportTimeoutMillis / 1000;
         $this->maxExportBatchSize = $maxExportBatchSize;
 
-        $this->queue = new SplQueue();
-
-        EventLoop::queue(self::worker(...), WeakReference::create($this));
+        $this->scheduledDelayCallbackId = EventLoop::unreference(EventLoop::repeat(
+            $this->scheduledDelay,
+            weakClosure($this->queueBatch(...)),
+        ));
     }
 
     public function __destruct()
     {
-        $this->resumeWorker();
+        $this->closed = true;
+        EventLoop::cancel($this->scheduledDelayCallbackId);
     }
 
     public function onStart(ReadWriteSpanInterface $span, ?Context $parentContext = null): void
@@ -77,15 +98,14 @@ final class BatchSpanProcessor implements SpanProcessorInterface
             return;
         }
 
-        if (count($this->queue) === $this->maxQueueSize && count($this->batch) === $this->maxBatchSize) {
+        if ($this->queueSize === $this->maxQueueSize) {
             return;
         }
 
+        $this->queueSize++;
         $this->batch[] = $span->toSpanData();
         if (count($this->batch) === $this->maxExportBatchSize) {
-            $this->resumeWorker();
-            $this->queue->enqueue($this->batch);
-            $this->batch = [];
+            $this->queueBatch();
         }
     }
 
@@ -95,12 +115,12 @@ final class BatchSpanProcessor implements SpanProcessorInterface
             return false;
         }
 
-        $this->closed = true;
+        $this->queueBatch();
+        $this->__destruct();
 
-        $flush = $this->flush($cancellation);
-        $shutdown = $this->spanExporter->shutdown($cancellation);
+        $shutdown = async($this->spanExporter->shutdown(...), $cancellation);
 
-        return $flush && $shutdown;
+        return $this->awaitPending($cancellation) && $shutdown->await();
     }
 
     public function forceFlush(?Cancellation $cancellation = null): bool
@@ -109,74 +129,46 @@ final class BatchSpanProcessor implements SpanProcessorInterface
             return false;
         }
 
-        $flush = $this->flush($cancellation);
-        $forceFlush = $this->spanExporter->forceFlush($cancellation);
+        $this->queueBatch();
 
-        return $flush && $forceFlush;
+        $forceFlush = async($this->spanExporter->forceFlush(...), $cancellation);
+
+        return $this->awaitPending($cancellation) && $forceFlush->await();
     }
 
-    private static function worker(WeakReference $r): void
+    private function queueBatch(): void
     {
-        if (!$p = $r->get()) {
+        assert(!$this->closed);
+        if (!$batch = $this->batch) {
             return;
         }
 
-        $worker = EventLoop::getSuspension();
+        $this->batch = [];
+        EventLoop::disable($this->scheduledDelayCallbackId);
+        EventLoop::enable($this->scheduledDelayCallbackId);
 
-        /** @var self $p */
-        /** @psalm-suppress InvalidArgument @phan-suppress-next-line PhanTypeMismatchArgumentSuperType */
-        $delay = EventLoop::repeat($p->scheduledDelay, $worker->resume(...));
-        EventLoop::unreference($delay);
-        EventLoop::disable($delay);
-
-        do {
-            $p->worker = null;
-            for ($i = 0; !$p->queue->isEmpty(); $i++) {
-                $p->spanExporter->export($p->queue->dequeue(), new TimeoutCancellation($p->exportTimeout));
+        $id = array_key_last($this->pending) + 1;
+        $this->pending[$id] = async(function (array $batch, int $id): int {
+            try {
+                /** @var list<SpanDataInterface> $batch */
+                return $this->spanExporter->export($batch, new TimeoutCancellation($this->exportTimeout));
+            } finally {
+                $this->queueSize -= count($batch);
+                unset($this->pending[$id]);
             }
-            if (($p->flush || !$i) && $batch = $p->batch) {
-                $p->batch = [];
-                $p->spanExporter->export($batch, new TimeoutCancellation($p->exportTimeout));
-                unset($batch);
-            }
-
-            $p->flush?->complete();
-            $p->flush = null;
-
-            if ($p->closed) {
-                break;
-            }
-
-            $p->worker = $worker;
-            $p = null;
-
-            EventLoop::enable($delay);
-            $worker->suspend();
-            EventLoop::disable($delay);
-        } while ($p = $r->get());
-
-        EventLoop::cancel($delay);
+        }, $batch, $id);
     }
 
-    private function flush(?Cancellation $cancellation = null): bool
+    private function awaitPending(?Cancellation $cancellation): bool
     {
-        $this->resumeWorker();
-        $this->flush ??= new DeferredFuture();
-
         try {
-            $this->flush->getFuture()->await($cancellation);
+            foreach (Future::iterate($this->pending, $cancellation) as $future) {
+                $future->await();
+            }
         } catch (CancelledException) {
             return false;
         }
 
         return true;
-    }
-
-    private function resumeWorker(): void
-    {
-        if ($worker = $this->worker) {
-            $this->worker = null;
-            $worker->resume();
-        }
     }
 }

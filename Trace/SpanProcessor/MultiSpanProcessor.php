@@ -41,8 +41,11 @@ final class MultiSpanProcessor implements SpanProcessorInterface
     public function shutdown(?Cancellation $cancellation = null): bool
     {
         $futures = [];
+        $shutdown = static function (SpanProcessorInterface $p, ?Cancellation $cancellation): bool {
+            return $p->shutdown($cancellation);
+        };
         foreach ($this->spanProcessors as $spanProcessor) {
-            $futures[] = async($spanProcessor->shutdown(...), $cancellation);
+            $futures[] = async($shutdown, $spanProcessor, $cancellation);
         }
 
         $success = true;
@@ -58,8 +61,11 @@ final class MultiSpanProcessor implements SpanProcessorInterface
     public function forceFlush(?Cancellation $cancellation = null): bool
     {
         $futures = [];
+        $forceFlush = static function (SpanProcessorInterface $p, ?Cancellation $cancellation): bool {
+            return $p->forceFlush($cancellation);
+        };
         foreach ($this->spanProcessors as $spanProcessor) {
-            $futures[] = async($spanProcessor->forceFlush(...), $cancellation);
+            $futures[] = async($forceFlush, $spanProcessor, $cancellation);
         }
 
         $success = true;
