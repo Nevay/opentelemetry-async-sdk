@@ -12,7 +12,7 @@ use function sprintf;
 
 final class SpanExporterWrapper implements SpanExporterInterface
 {
-    private SyncSpanExporterInterface $spanExporter;
+    private readonly SyncSpanExporterInterface $spanExporter;
 
     private function __construct(SyncSpanExporterInterface $spanExporter)
     {

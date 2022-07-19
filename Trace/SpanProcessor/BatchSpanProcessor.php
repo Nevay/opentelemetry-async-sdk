@@ -28,12 +28,12 @@ use function sprintf;
  */
 final class BatchSpanProcessor implements SpanProcessorInterface
 {
-    private SpanExporterInterface $spanExporter;
-    private int $maxQueueSize;
-    private float $scheduledDelay;
-    private float $exportTimeout;
-    private int $maxExportBatchSize;
-    private string $scheduledDelayCallbackId;
+    private readonly SpanExporterInterface $spanExporter;
+    private readonly int $maxQueueSize;
+    private readonly float $scheduledDelay;
+    private readonly float $exportTimeout;
+    private readonly int $maxExportBatchSize;
+    private readonly string $scheduledDelayCallbackId;
 
     private int $queueSize = 0;
     /** @var list<SpanDataInterface> */

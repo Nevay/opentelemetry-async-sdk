@@ -14,7 +14,7 @@ use OpenTelemetry\SDK\Trace\ReadWriteSpanInterface;
 
 final class MultiSpanProcessor implements SpanProcessorInterface
 {
-    private iterable $spanProcessors;
+    private readonly iterable $spanProcessors;
 
     /**
      * @param iterable<SpanProcessorInterface> $spanProcessors
