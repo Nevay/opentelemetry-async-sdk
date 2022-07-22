@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace OpenTelemetry\Async\SDK\Trace\SpanProcessor;
 
 use function Amp\async;
-use Amp\Cancellation;
 use Amp\Future;
-use OpenTelemetry\Async\SDK\Trace\SpanProcessorInterface;
 use OpenTelemetry\Context\Context;
+use OpenTelemetry\SDK\Common\Future\CancellationInterface;
 use OpenTelemetry\SDK\Trace\ReadableSpanInterface;
 use OpenTelemetry\SDK\Trace\ReadWriteSpanInterface;
+use OpenTelemetry\SDK\Trace\SpanProcessorInterface;
 
 final class MultiSpanProcessor implements SpanProcessorInterface
 {
@@ -38,10 +38,10 @@ final class MultiSpanProcessor implements SpanProcessorInterface
         }
     }
 
-    public function shutdown(?Cancellation $cancellation = null): bool
+    public function shutdown(?CancellationInterface $cancellation = null): bool
     {
         $futures = [];
-        $shutdown = static function (SpanProcessorInterface $p, ?Cancellation $cancellation): bool {
+        $shutdown = static function (SpanProcessorInterface $p, ?CancellationInterface $cancellation): bool {
             return $p->shutdown($cancellation);
         };
         foreach ($this->spanProcessors as $spanProcessor) {
@@ -58,10 +58,10 @@ final class MultiSpanProcessor implements SpanProcessorInterface
         return $success;
     }
 
-    public function forceFlush(?Cancellation $cancellation = null): bool
+    public function forceFlush(?CancellationInterface $cancellation = null): bool
     {
         $futures = [];
-        $forceFlush = static function (SpanProcessorInterface $p, ?Cancellation $cancellation): bool {
+        $forceFlush = static function (SpanProcessorInterface $p, ?CancellationInterface $cancellation): bool {
             return $p->forceFlush($cancellation);
         };
         foreach ($this->spanProcessors as $spanProcessor) {

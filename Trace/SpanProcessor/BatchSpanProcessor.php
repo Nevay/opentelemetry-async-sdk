@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace OpenTelemetry\Async\SDK\Trace\SpanProcessor;
 
 use function Amp\async;
-use Amp\Cancellation;
 use Amp\CancelledException;
 use Amp\Future;
 use Amp\TimeoutCancellation;
@@ -14,12 +13,15 @@ use function array_key_last;
 use function assert;
 use function count;
 use InvalidArgumentException;
-use OpenTelemetry\Async\SDK\Trace\SpanExporterInterface;
-use OpenTelemetry\Async\SDK\Trace\SpanProcessorInterface;
+use OpenTelemetry\Async\SDK\Adapter\AmpCancellation;
+use OpenTelemetry\Async\SDK\Adapter\OtelCancellation;
 use OpenTelemetry\Context\Context;
+use OpenTelemetry\SDK\Common\Future\CancellationInterface;
 use OpenTelemetry\SDK\Trace\ReadableSpanInterface;
 use OpenTelemetry\SDK\Trace\ReadWriteSpanInterface;
 use OpenTelemetry\SDK\Trace\SpanDataInterface;
+use OpenTelemetry\SDK\Trace\SpanExporterInterface;
+use OpenTelemetry\SDK\Trace\SpanProcessorInterface;
 use Revolt\EventLoop;
 use function sprintf;
 
@@ -109,7 +111,7 @@ final class BatchSpanProcessor implements SpanProcessorInterface
         }
     }
 
-    public function shutdown(?Cancellation $cancellation = null): bool
+    public function shutdown(?CancellationInterface $cancellation = null): bool
     {
         if ($this->closed) {
             return false;
@@ -123,7 +125,7 @@ final class BatchSpanProcessor implements SpanProcessorInterface
         return $this->awaitPending($cancellation) && $shutdown->await();
     }
 
-    public function forceFlush(?Cancellation $cancellation = null): bool
+    public function forceFlush(?CancellationInterface $cancellation = null): bool
     {
         if ($this->closed) {
             return false;
@@ -151,7 +153,7 @@ final class BatchSpanProcessor implements SpanProcessorInterface
         $this->pending[$id] = async(function (array $batch, int $id): int {
             try {
                 /** @var list<SpanDataInterface> $batch */
-                return $this->spanExporter->export($batch, new TimeoutCancellation($this->exportTimeout));
+                return $this->spanExporter->export($batch, AmpCancellation::adapt(new TimeoutCancellation($this->exportTimeout)));
             } finally {
                 $this->queueSize -= count($batch);
                 unset($this->pending[$id]);
@@ -159,8 +161,12 @@ final class BatchSpanProcessor implements SpanProcessorInterface
         }, $batch, $id);
     }
 
-    private function awaitPending(?Cancellation $cancellation): bool
+    private function awaitPending(?CancellationInterface $cancellation): bool
     {
+        if ($cancellation) {
+            $cancellation = OtelCancellation::adapt($cancellation);
+        }
+
         try {
             foreach (Future::iterate($this->pending, $cancellation) as $future) {
                 $future->await();
