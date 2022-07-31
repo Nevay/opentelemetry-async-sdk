@@ -150,15 +150,17 @@ final class BatchSpanProcessor implements SpanProcessorInterface
         EventLoop::enable($this->scheduledDelayCallbackId);
 
         $id = array_key_last($this->pending) + 1;
-        $this->pending[$id] = async(function (array $batch, int $id): int {
-            try {
-                /** @var list<SpanDataInterface> $batch */
-                return $this->spanExporter->export($batch, AmpCancellation::adapt(new TimeoutCancellation($this->exportTimeout)));
-            } finally {
-                $this->queueSize -= count($batch);
-                unset($this->pending[$id]);
-            }
-        }, $batch, $id);
+        $this->pending[$id] = async(
+            $this->spanExporter->export(...),
+            $batch,
+            AmpCancellation::adapt(new TimeoutCancellation($this->exportTimeout)),
+        );
+
+        $count = count($batch);
+        $this->pending[$id]->finally(function () use ($count, $id): void {
+            $this->queueSize -= $count;
+            unset($this->pending[$id]);
+        });
     }
 
     private function awaitPending(?CancellationInterface $cancellation): bool
