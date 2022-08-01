@@ -120,9 +120,9 @@ final class BatchSpanProcessor implements SpanProcessorInterface
         $this->queueBatch();
         $this->__destruct();
 
-        $shutdown = async($this->spanExporter->shutdown(...), $cancellation);
-
-        return $this->awaitPending($cancellation) && $shutdown->await();
+        // Async to preserve order with ::queueBatch()
+        return async($this->spanExporter->shutdown(...), $cancellation)->await()
+            && $this->awaitPending($cancellation);
     }
 
     public function forceFlush(?CancellationInterface $cancellation = null): bool
@@ -133,9 +133,9 @@ final class BatchSpanProcessor implements SpanProcessorInterface
 
         $this->queueBatch();
 
-        $forceFlush = async($this->spanExporter->forceFlush(...), $cancellation);
-
-        return $this->awaitPending($cancellation) && $forceFlush->await();
+        // Async to preserve order with ::queueBatch()
+        return async($this->spanExporter->forceFlush(...), $cancellation)->await()
+            && $this->awaitPending($cancellation);
     }
 
     private function queueBatch(): void
