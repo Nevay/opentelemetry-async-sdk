@@ -1,5 +1,7 @@
 <?php
 
+/** @noinspection PhpVarTagWithoutVariableNameInspection */
+
 declare(strict_types=1);
 
 namespace OpenTelemetry\Async\SDK\Adapter;
@@ -32,6 +34,9 @@ final class OtelCancellation implements Cancellation, CancellationInterface
             : new self($cancellation);
     }
 
+    /**
+     * @psalm-param Closure(\Amp\CancelledException) $callback
+     */
     public function subscribe(Closure $callback): string
     {
         return $this->deferred->subscribe($callback);
