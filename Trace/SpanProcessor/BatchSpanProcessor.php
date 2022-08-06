@@ -94,7 +94,6 @@ final class BatchSpanProcessor implements SpanProcessorInterface
             static function () use ($reference): void {
                 $self = $reference->get();
                 assert($self instanceof self);
-                $self->resumeWorker();
                 $self->flush();
             },
         ));
@@ -128,7 +127,7 @@ final class BatchSpanProcessor implements SpanProcessorInterface
 
         $this->queueSize++;
         $this->batch[] = $span->toSpanData();
-        EventLoop::enable($this->scheduledDelayCallbackId);
+        $this->scheduleFlush();
 
         if (count($this->batch) === $this->maxExportBatchSize) {
             $this->resumeWorker();
@@ -220,6 +219,20 @@ final class BatchSpanProcessor implements SpanProcessorInterface
         EventLoop::disable($this->scheduledDelayCallbackId);
     }
 
+    private function flushId(): int
+    {
+        return $this->batchId + $this->queue->count() + (int) (bool) $this->batch;
+    }
+
+    private function scheduleFlush(): void
+    {
+        assert($this->batch !== []);
+
+        if (!isset($this->flush[$this->flushId()])) {
+            EventLoop::enable($this->scheduledDelayCallbackId);
+        }
+    }
+
     /**
      * Indicates that the current batch should be flushed. Returns a future that
      * will be resolved after the current batch was sent to the exporter.
@@ -229,14 +242,15 @@ final class BatchSpanProcessor implements SpanProcessorInterface
     private function flush(): Future
     {
         if ($this->queue->isEmpty() && !$this->batch) {
-            return Future::complete([]);
+            static $empty;
+
+            return $empty ??= Future::complete([]);
         }
 
-        $flushId = $this->batchId + $this->queue->count() + (int) (bool) $this->batch;
-        $flush = $this->flush[$flushId] ??= new DeferredFuture();
+        $this->resumeWorker();
         EventLoop::disable($this->scheduledDelayCallbackId);
 
-        return $flush->getFuture();
+        return ($this->flush[$this->flushId()] ??= new DeferredFuture())->getFuture();
     }
 
     /**
