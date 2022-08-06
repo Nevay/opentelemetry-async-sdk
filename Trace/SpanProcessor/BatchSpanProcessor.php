@@ -22,6 +22,8 @@ use OpenTelemetry\SDK\Trace\ReadWriteSpanInterface;
 use OpenTelemetry\SDK\Trace\SpanDataInterface;
 use OpenTelemetry\SDK\Trace\SpanExporterInterface;
 use OpenTelemetry\SDK\Trace\SpanProcessorInterface;
+use Psr\Log\LoggerAwareInterface;
+use Psr\Log\LoggerAwareTrait;
 use Revolt\EventLoop;
 use Revolt\EventLoop\Suspension;
 use SplQueue;
@@ -32,8 +34,10 @@ use WeakReference;
 /**
  * @see https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/sdk.md#batching-processor
  */
-final class BatchSpanProcessor implements SpanProcessorInterface
+final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInterface
 {
+    use LoggerAwareTrait;
+
     private readonly SpanExporterInterface $spanExporter;
     private readonly int $maxQueueSize;
     private readonly float $scheduledDelay;
@@ -48,7 +52,7 @@ final class BatchSpanProcessor implements SpanProcessorInterface
     private SplQueue $queue;
     /** @var list<SpanDataInterface> */
     private array $batch = [];
-    /** @var array<int, DeferredFuture> */
+    /** @var array<int, DeferredFuture<array<int, Future>>> */
     private array $flush = [];
     /** @var array<int, Future> */
     private array $pending = [];
@@ -89,14 +93,14 @@ final class BatchSpanProcessor implements SpanProcessorInterface
 
         $reference = WeakReference::create($this);
         $this->workerCallbackId = EventLoop::defer(static fn () => self::worker($reference));
-        $this->scheduledDelayCallbackId = EventLoop::unreference(EventLoop::repeat(
+        $this->scheduledDelayCallbackId = EventLoop::disable(EventLoop::unreference(EventLoop::repeat(
             $this->scheduledDelay,
             static function () use ($reference): void {
                 $self = $reference->get();
                 assert($self instanceof self);
                 $self->flush();
             },
-        ));
+        )));
     }
 
     public function __destruct()
@@ -184,16 +188,17 @@ final class BatchSpanProcessor implements SpanProcessorInterface
                     $future = Future::error($e);
                 }
 
-                $future->finally(static function () use ($count, $id, $p): void {
+                $future = $future->catch(static fn (Throwable $e) => $p->logger?->error('Unhandled export error', ['exception' => $e]));
+                $future = $future->finally(static function () use ($count, $id, $p): void {
                     $p->queueSize -= $count;
                     unset($p->pending[$id]);
-                })->ignore();
+                });
 
                 $p->pending[$id] = $future;
 
                 /** @phan-suppress-next-line PhanNonClassMethodCall */
                 ($p->flush[$id] ?? null)?->complete($p->pending);
-                unset($p->flush[$id]);
+                unset($p->flush[$id], $future, $e);
             }
 
             $p->worker = $worker;
