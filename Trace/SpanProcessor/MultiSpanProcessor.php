@@ -24,7 +24,7 @@ final class MultiSpanProcessor implements SpanProcessorInterface
         $this->spanProcessors = $spanProcessors;
     }
 
-    public function onStart(ReadWriteSpanInterface $span, ?Context $parentContext = null): void
+    public function onStart(ReadWriteSpanInterface $span, Context $parentContext): void
     {
         foreach ($this->spanProcessors as $spanProcessor) {
             $spanProcessor->onStart($span, $parentContext);
