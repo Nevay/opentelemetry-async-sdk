@@ -131,8 +131,10 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
 
         $this->queueSize++;
         $this->batch[] = $span->toSpanData();
-        $this->scheduleFlush();
 
+        if (count($this->batch) === 1) {
+            EventLoop::enable($this->scheduledDelayCallbackId);
+        }
         if (count($this->batch) === $this->maxExportBatchSize) {
             $this->resumeWorker();
             $this->queueBatch();
@@ -224,20 +226,6 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
         EventLoop::disable($this->scheduledDelayCallbackId);
     }
 
-    private function flushId(): int
-    {
-        return $this->batchId + $this->queue->count() + (int) (bool) $this->batch;
-    }
-
-    private function scheduleFlush(): void
-    {
-        assert($this->batch !== []);
-
-        if (!isset($this->flush[$this->flushId()])) {
-            EventLoop::enable($this->scheduledDelayCallbackId);
-        }
-    }
-
     /**
      * Indicates that the current batch should be flushed. Returns a future that
      * will be resolved after the current batch was sent to the exporter.
@@ -254,8 +242,9 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
 
         $this->resumeWorker();
         EventLoop::disable($this->scheduledDelayCallbackId);
+        $flushId = $this->batchId + $this->queue->count() + (int) (bool) $this->batch;
 
-        return ($this->flush[$this->flushId()] ??= new DeferredFuture())->getFuture();
+        return ($this->flush[$flushId] ??= new DeferredFuture())->getFuture();
     }
 
     /**
