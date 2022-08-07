@@ -235,9 +235,7 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
     private function flush(): Future
     {
         if ($this->queue->isEmpty() && !$this->batch) {
-            static $empty;
-
-            return $empty ??= Future::complete([]);
+            return Future::complete($this->pending);
         }
 
         $this->resumeWorker();
