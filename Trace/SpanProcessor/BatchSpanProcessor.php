@@ -173,8 +173,6 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
         $worker = EventLoop::getSuspension();
 
         do {
-            $p->worker = null;
-
             while (!$p->queue->isEmpty() || $p->flush) {
                 if ($p->queue->isEmpty()) {
                     $p->queueBatch();
@@ -201,6 +199,10 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
                 /** @phan-suppress-next-line PhanNonClassMethodCall */
                 ($p->flush[$id] ?? null)?->complete($p->pending);
                 unset($p->flush[$id], $future, $e);
+            }
+
+            if ($p->closed) {
+                return;
             }
 
             $p->worker = $worker;
