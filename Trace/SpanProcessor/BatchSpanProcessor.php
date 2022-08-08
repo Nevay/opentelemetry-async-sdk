@@ -32,6 +32,9 @@ use Throwable;
 use WeakReference;
 
 /**
+ * `SpanProcessor` which creates batches of spans and passes them to the
+ * configured `SpanExporter` after exceeding the configured delay or batch size.
+ *
  * @see https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/sdk.md#batching-processor
  */
 final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInterface
@@ -60,6 +63,16 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
 
     private bool $closed = false;
 
+    /**
+     * @param SpanExporterInterface $spanExporter exporter to push spans to
+     * @param int $maxQueueSize maximum number of pending spans (queued and
+     *        in-flight), spans exceeding this limit will be dropped
+     * @param int $scheduledDelayMillis delay interval in milliseconds between
+     *        two consecutive exports if `$maxExportBatchSize` is not exceeded
+     * @param int $exportTimeoutMillis export timeout in milliseconds
+     * @param int $maxExportBatchSize maximum batch size of every export, spans
+     *        will be exported eagerly after reaching this limit
+     */
     public function __construct(
         SpanExporterInterface $spanExporter,
         int $maxQueueSize = 2048,
@@ -229,8 +242,8 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
     }
 
     /**
-     * Indicates that the current batch should be flushed. Returns a future that
-     * will be resolved after the current batch was sent to the exporter.
+     * Flushes the current batch. The returned future will be resolved with all
+     * pending exports after the current batch was sent to the exporter.
      *
      * @return Future<array<int, Future>>
      */
@@ -248,8 +261,8 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
     }
 
     /**
-     * Waits until the current batch is exported. The given callback will be
-     * executed after the current batch was {@see self::flush()}ed.
+     * Waits until all batches are exported. The given callback is executed
+     * after the current batch is {@see self::flush()}ed.
      *
      * @psalm-param Closure(?CancellationInterface=): bool $closure
      */
