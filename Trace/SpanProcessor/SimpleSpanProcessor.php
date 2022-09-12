@@ -110,9 +110,9 @@ final class SimpleSpanProcessor implements SpanProcessorInterface, LoggerAwareIn
             return;
         }
 
-        $this->resumeWorker();
         $this->queueSize++;
         $this->queue->enqueue($span->toSpanData());
+        $this->resumeWorker();
     }
 
     public function shutdown(?CancellationInterface $cancellation = null): bool
