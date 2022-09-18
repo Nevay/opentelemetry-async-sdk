@@ -11,7 +11,11 @@ use Amp\Future;
 use Amp\TimeoutCancellation;
 use function assert;
 use Closure;
+use function count;
 use InvalidArgumentException;
+use OpenTelemetry\API\Metrics\MeterProviderInterface;
+use OpenTelemetry\API\Metrics\ObservableCallbackInterface;
+use OpenTelemetry\API\Metrics\ObserverInterface;
 use OpenTelemetry\Async\SDK\Adapter\AmpCancellation;
 use OpenTelemetry\Async\SDK\Adapter\OtelCancellation;
 use OpenTelemetry\Context\Context;
@@ -40,11 +44,20 @@ final class SimpleSpanProcessor implements SpanProcessorInterface, LoggerAwareIn
 {
     use LoggerAwareTrait;
 
+    private const ATTRIBUTES_PROCESSOR = ['processor' => 'simple'];
+    private const ATTRIBUTES_QUEUED    = self::ATTRIBUTES_PROCESSOR + ['state' => 'queued'];
+    private const ATTRIBUTES_PENDING   = self::ATTRIBUTES_PROCESSOR + ['state' => 'pending'];
+    private const ATTRIBUTES_PROCESSED = self::ATTRIBUTES_PROCESSOR + ['state' => 'processed'];
+    private const ATTRIBUTES_DROPPED   = self::ATTRIBUTES_PROCESSOR + ['state' => 'dropped'];
+    private const ATTRIBUTES_FREE      = self::ATTRIBUTES_PROCESSOR + ['state' => 'free'];
+
     private readonly SpanExporterInterface $spanExporter;
     private readonly int $maxQueueSize;
     private readonly float $exportTimeout;
     private readonly string $workerCallbackId;
 
+    private int $dropped = 0;
+    private int $processed = 0;
     private int $queueSize = 0;
     private int $batchId = 0;
     /** @var SplQueue<SpanDataInterface> */
@@ -57,6 +70,11 @@ final class SimpleSpanProcessor implements SpanProcessorInterface, LoggerAwareIn
 
     private bool $closed = false;
 
+    private ?ObservableCallbackInterface $activeExportsObserver = null;
+    private ?ObservableCallbackInterface $receivedSpansObserver = null;
+    private ?ObservableCallbackInterface $queueLimitObserver = null;
+    private ?ObservableCallbackInterface $queueUsageObserver = null;
+
     /**
      * @param SpanExporterInterface $spanExporter exporter to push spans to
      * @param int $maxQueueSize maximum number of pending spans (queued and
@@ -67,6 +85,7 @@ final class SimpleSpanProcessor implements SpanProcessorInterface, LoggerAwareIn
         SpanExporterInterface $spanExporter,
         int $maxQueueSize = 2048,
         int $exportTimeoutMillis = 30000,
+        ?MeterProviderInterface $meterProvider = null,
     ) {
         if ($maxQueueSize < 0) {
             throw new InvalidArgumentException(sprintf('Maximum queue size (%d) must be greater than or equal to zero', $maxQueueSize));
@@ -83,6 +102,70 @@ final class SimpleSpanProcessor implements SpanProcessorInterface, LoggerAwareIn
 
         $reference = WeakReference::create($this);
         $this->workerCallbackId = EventLoop::defer(static fn () => self::worker($reference));
+
+        if (!$meterProvider) {
+            return;
+        }
+
+        $meter = $meterProvider->getMeter('otel-async');
+        $this->activeExportsObserver = $meter
+            ->createObservableUpDownCounter(
+                'otel.trace.span_processor.active_exports',
+                '{exports}',
+                'The number of concurrent exports that are currently in-flight',
+            )
+            ->observe(static function (ObserverInterface $observer) use ($reference): void {
+                $self = $reference->get();
+                assert($self instanceof self);
+                $observer->observe(count($self->pending), self::ATTRIBUTES_PROCESSOR);
+            });
+        $this->receivedSpansObserver = $meter
+            ->createObservableUpDownCounter(
+                'otel.trace.span_processor.spans',
+                '{spans}',
+                'The number of received spans',
+            )
+            ->observe(static function (ObserverInterface $observer) use ($reference): void {
+                $self = $reference->get();
+                assert($self instanceof self);
+                $queued = $self->queue->count();
+                $pending = $self->queueSize - $queued;
+                $processed = $self->processed;
+                $dropped = $self->dropped;
+
+                $observer->observe($queued, self::ATTRIBUTES_QUEUED);
+                $observer->observe($pending, self::ATTRIBUTES_PENDING);
+                $observer->observe($processed, self::ATTRIBUTES_PROCESSED);
+                $observer->observe($dropped, self::ATTRIBUTES_DROPPED);
+            });
+        $this->queueLimitObserver = $meter
+            ->createObservableUpDownCounter(
+                'otel.trace.span_processor.queue.limit',
+                '{spans}',
+                'The queue size limit',
+            )
+            ->observe(static function (ObserverInterface $observer) use ($reference): void {
+                $self = $reference->get();
+                assert($self instanceof self);
+                $observer->observe($self->maxQueueSize, self::ATTRIBUTES_PROCESSOR);
+            });
+        $this->queueUsageObserver = $meter
+            ->createObservableUpDownCounter(
+                'otel.trace.span_processor.queue.usage',
+                '{spans}',
+                'The current queue usage',
+            )
+            ->observe(static function (ObserverInterface $observer) use ($reference): void {
+                $self = $reference->get();
+                assert($self instanceof self);
+                $queued = $self->queue->count();
+                $pending = $self->queueSize - $queued;
+                $free = $self->maxQueueSize - $self->queueSize;
+
+                $observer->observe($queued, self::ATTRIBUTES_QUEUED);
+                $observer->observe($pending, self::ATTRIBUTES_PENDING);
+                $observer->observe($free, self::ATTRIBUTES_FREE);
+            });
     }
 
     public function __destruct()
@@ -90,6 +173,11 @@ final class SimpleSpanProcessor implements SpanProcessorInterface, LoggerAwareIn
         $this->resumeWorker();
         $this->closed = true;
         EventLoop::cancel($this->workerCallbackId);
+
+        $this->activeExportsObserver?->detach();
+        $this->receivedSpansObserver?->detach();
+        $this->queueLimitObserver?->detach();
+        $this->queueUsageObserver?->detach();
     }
 
     public function onStart(ReadWriteSpanInterface $span, Context $parentContext): void
@@ -107,6 +195,8 @@ final class SimpleSpanProcessor implements SpanProcessorInterface, LoggerAwareIn
         }
 
         if ($this->queueSize === $this->maxQueueSize) {
+            $this->dropped++;
+
             return;
         }
 
@@ -157,8 +247,10 @@ final class SimpleSpanProcessor implements SpanProcessorInterface, LoggerAwareIn
                     $future = Future::error($e);
                 }
 
+                $future = $future->map(static fn (bool $success) => $success or $p->logger?->warning('Export failed'));
                 $future = $future->catch(static fn (Throwable $e) => $p->logger?->error('Unhandled export error', ['exception' => $e]));
                 $future = $future->finally(static function () use ($id, $p): void {
+                    $p->processed++;
                     $p->queueSize--;
                     unset($p->pending[$id]);
                 });
