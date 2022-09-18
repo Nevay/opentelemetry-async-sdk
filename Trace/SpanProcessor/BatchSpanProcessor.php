@@ -153,7 +153,7 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
             ->createObservableUpDownCounter(
                 'otel.trace.span_processor.spans',
                 '{spans}',
-                'The number of received spans',
+                'The number of sampled spans received by the span processor',
             )
             ->observe(static function (ObserverInterface $observer) use ($reference): void {
                 $self = $reference->get();
