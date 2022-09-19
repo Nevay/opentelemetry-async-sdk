@@ -6,7 +6,7 @@ namespace OpenTelemetry\Async\SDK\Trace\SpanProcessor;
 
 use function Amp\async;
 use Amp\Future;
-use OpenTelemetry\Context\Context;
+use OpenTelemetry\Context\ContextInterface;
 use OpenTelemetry\SDK\Common\Future\CancellationInterface;
 use OpenTelemetry\SDK\Trace\ReadableSpanInterface;
 use OpenTelemetry\SDK\Trace\ReadWriteSpanInterface;
@@ -24,7 +24,7 @@ final class MultiSpanProcessor implements SpanProcessorInterface
         $this->spanProcessors = $spanProcessors;
     }
 
-    public function onStart(ReadWriteSpanInterface $span, Context $parentContext): void
+    public function onStart(ReadWriteSpanInterface $span, ContextInterface $parentContext): void
     {
         foreach ($this->spanProcessors as $spanProcessor) {
             $spanProcessor->onStart($span, $parentContext);

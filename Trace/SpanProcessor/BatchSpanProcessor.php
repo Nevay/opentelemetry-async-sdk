@@ -18,7 +18,7 @@ use OpenTelemetry\API\Metrics\ObservableCallbackInterface;
 use OpenTelemetry\API\Metrics\ObserverInterface;
 use OpenTelemetry\Async\SDK\Adapter\AmpCancellation;
 use OpenTelemetry\Async\SDK\Adapter\OtelCancellation;
-use OpenTelemetry\Context\Context;
+use OpenTelemetry\Context\ContextInterface;
 use OpenTelemetry\SDK\Common\Future\CancellationInterface;
 use OpenTelemetry\SDK\Trace\ReadableSpanInterface;
 use OpenTelemetry\SDK\Trace\ReadWriteSpanInterface;
@@ -137,7 +137,7 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
             return;
         }
 
-        $meter = $meterProvider->getMeter('otel-async');
+        $meter = $meterProvider->getMeter('io.opentelemetry.sdk.async');
         $this->activeExportsObserver = $meter
             ->createObservableUpDownCounter(
                 'otel.trace.span_processor.active_exports',
@@ -211,7 +211,7 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
         $this->queueUsageObserver?->detach();
     }
 
-    public function onStart(ReadWriteSpanInterface $span, Context $parentContext): void
+    public function onStart(ReadWriteSpanInterface $span, ContextInterface $parentContext): void
     {
         // no-op
     }
