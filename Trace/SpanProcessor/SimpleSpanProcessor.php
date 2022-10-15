@@ -288,11 +288,11 @@ final class SimpleSpanProcessor implements SpanProcessorInterface, LoggerAwareIn
      */
     private function flush(): Future
     {
+        $this->resumeWorker();
         if ($this->queue->isEmpty()) {
             return Future::complete($this->pending);
         }
 
-        $this->resumeWorker();
         $flushId = $this->batchId + $this->queue->count();
 
         return ($this->flush[$flushId] ??= new DeferredFuture())->getFuture();

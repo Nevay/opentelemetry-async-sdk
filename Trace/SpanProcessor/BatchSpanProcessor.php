@@ -340,11 +340,11 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
      */
     private function flush(): Future
     {
+        $this->resumeWorker();
         if ($this->queue->isEmpty() && !$this->batch) {
             return Future::complete($this->pending);
         }
 
-        $this->resumeWorker();
         EventLoop::disable($this->scheduledDelayCallbackId);
         $flushId = $this->batchId + $this->queue->count() + (int) (bool) $this->batch;
 
