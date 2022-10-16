@@ -19,9 +19,9 @@ final class AmpCancellation implements Cancellation, CancellationInterface
         $this->cancellation = $cancellation;
     }
 
-    public static function adapt(Cancellation $cancellation): CancellationInterface
+    public static function adapt(?Cancellation $cancellation): ?CancellationInterface
     {
-        return $cancellation instanceof CancellationInterface
+        return !$cancellation || $cancellation instanceof CancellationInterface
             ? $cancellation
             : new self($cancellation);
     }

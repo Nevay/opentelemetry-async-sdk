@@ -27,9 +27,9 @@ final class OtelCancellation implements Cancellation, CancellationInterface
         $this->deferred = $deferred->getCancellation();
     }
 
-    public static function adapt(CancellationInterface $cancellation): Cancellation
+    public static function adapt(?CancellationInterface $cancellation): ?Cancellation
     {
-        return $cancellation instanceof Cancellation
+        return !$cancellation || $cancellation instanceof Cancellation
             ? $cancellation
             : new self($cancellation);
     }

@@ -4,11 +4,12 @@ declare(strict_types=1);
 
 namespace OpenTelemetry\Async\SDK\Trace\SpanProcessor;
 
-use function Amp\async;
 use Amp\CancelledException;
 use Amp\DeferredFuture;
 use Amp\Future;
 use Amp\TimeoutCancellation;
+use function array_intersect_key;
+use function array_keys;
 use function assert;
 use Closure;
 use function count;
@@ -20,6 +21,8 @@ use OpenTelemetry\Async\SDK\Adapter\AmpCancellation;
 use OpenTelemetry\Async\SDK\Adapter\OtelCancellation;
 use OpenTelemetry\Context\ContextInterface;
 use OpenTelemetry\SDK\Common\Future\CancellationInterface;
+use OpenTelemetry\SDK\Common\Future\ErrorFuture;
+use OpenTelemetry\SDK\Common\Future\FutureInterface;
 use OpenTelemetry\SDK\Trace\ReadableSpanInterface;
 use OpenTelemetry\SDK\Trace\ReadWriteSpanInterface;
 use OpenTelemetry\SDK\Trace\SpanDataInterface;
@@ -129,7 +132,7 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
             static function () use ($reference): void {
                 $self = $reference->get();
                 assert($self instanceof self);
-                $self->flush();
+                $self->flush($self->flushId());
             },
         )));
 
@@ -273,6 +276,35 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
         assert($p instanceof self);
 
         $worker = EventLoop::getSuspension();
+        $handler = static function (DeferredFuture $deferred, FutureInterface $future, self $processor, int $id, int $count): void {
+            $d = $deferred;
+            $f = $future;
+            $p = $processor;
+            unset($deferred, $future, $processor);
+
+            $success = $e = null;
+
+            try {
+                $success = $f->await();
+            } catch (Throwable $e) {
+            } finally {
+                $d->complete();
+                $p->processed += $count;
+                $p->queueSize -= $count;
+                unset($p->pending[$id]);
+            }
+
+            if (!$logger = $p->logger) {
+                return;
+            }
+
+            unset($d, $f, $p);
+            match ($success) {
+                true => $logger->info('Export successful', ['id' => $id]),
+                false => $logger->warning('Export failed', ['id' => $id]),
+                default => $logger->error('Unhandled export error', ['id' => $id, 'exception' => $e]),
+            };
+        };
 
         do {
             while (!$p->queue->isEmpty() || $p->flush) {
@@ -282,27 +314,21 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
                 $count = count($p->queue->bottom());
                 $id = ++$p->batchId;
 
+                $deferred = new DeferredFuture();
+                $p->pending[$id] = $deferred->getFuture();
+                ($p->flush[$id] ?? null)?->complete($p->pending);
+
                 try {
-                    $future = async($p->spanExporter
-                        ->export($p->queue->dequeue(), AmpCancellation::adapt(new TimeoutCancellation($p->exportTimeout)))
-                        ->await(...));
+                    $future = $p->spanExporter->export(
+                        $p->queue->dequeue(),
+                        AmpCancellation::adapt(new TimeoutCancellation($p->exportTimeout)),
+                    );
                 } catch (Throwable $e) {
-                    $future = Future::error($e);
+                    $future = new ErrorFuture($e);
                 }
 
-                $future = $future->map(static fn (bool $success) => $success or $p->logger?->warning('Export failed'));
-                $future = $future->catch(static fn (Throwable $e) => $p->logger?->error('Unhandled export error', ['exception' => $e]));
-                $future = $future->finally(static function () use ($count, $id, $p): void {
-                    $p->processed += $count;
-                    $p->queueSize -= $count;
-                    unset($p->pending[$id]);
-                });
-
-                $p->pending[$id] = $future;
-
-                /** @phan-suppress-next-line PhanNonClassMethodCall */
-                ($p->flush[$id] ?? null)?->complete($p->pending);
-                unset($p->flush[$id], $future, $e);
+                EventLoop::queue($handler, $deferred, $future, $p, $id, $count);
+                unset($p->flush[$id], $deferred, $future, $e);
             }
 
             if ($p->closed) {
@@ -317,10 +343,8 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
 
     private function resumeWorker(): void
     {
-        if ($worker = $this->worker) {
-            $this->worker = null;
-            $worker->resume();
-        }
+        $this->worker?->resume();
+        $this->worker = null;
     }
 
     private function queueBatch(): void
@@ -332,23 +356,26 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
         EventLoop::disable($this->scheduledDelayCallbackId);
     }
 
+    private function flushId(): int
+    {
+        return $this->batchId + $this->queue->count() + (int) (bool) $this->batch;
+    }
+
     /**
-     * Flushes the current batch. The returned future will be resolved with all
-     * pending exports after the current batch was sent to the exporter.
+     * Flushes the batch. The returned future will be resolved with all
+     * pending exports after the batch was sent to the exporter.
      *
      * @return Future<array<int, Future>>
+     * @see self::flushId()
      */
-    private function flush(): Future
+    private function flush(int $flushId): Future
     {
         $this->resumeWorker();
-        if ($this->queue->isEmpty() && !$this->batch) {
-            return Future::complete($this->pending);
-        }
-
         EventLoop::disable($this->scheduledDelayCallbackId);
-        $flushId = $this->batchId + $this->queue->count() + (int) (bool) $this->batch;
 
-        return ($this->flush[$flushId] ??= new DeferredFuture())->getFuture();
+        return $flushId <= $this->batchId
+            ? Future::complete($this->pending)
+            : ($this->flush[$flushId] ??= new DeferredFuture())->getFuture();
     }
 
     /**
@@ -359,25 +386,44 @@ final class BatchSpanProcessor implements SpanProcessorInterface, LoggerAwareInt
      */
     private function awaitExport(Closure $closure, ?CancellationInterface $cancellation): bool
     {
-        $adaptedCancellation = $cancellation
-            ? OtelCancellation::adapt($cancellation)
-            : null;
+        $c = $closure;
+        $o = $cancellation;
+        $a = OtelCancellation::adapt($cancellation);
+        unset($closure, $cancellation);
+
+        $flushId = $this->flushId();
 
         try {
-            $pending = $this->flush()->await($adaptedCancellation);
-        } catch (CancelledException) {
+            $pending = $this->flush($flushId)->await($a);
+        } catch (CancelledException $e) {
+            $this->logger?->warning('Flush cancelled, not all queued spans were processed', [
+                'exception' => $e,
+                'skipped_batches' => $flushId - $this->batchId,
+                'requested_id' => $flushId,
+                'processed_id' => $this->batchId,
+            ]);
+        }
+
+        try {
+            $success = $c($o);
+        } catch (Throwable $e) {
+            $this->logger?->error('Flush cancelled, unhandled exporter error', ['exception' => $e]);
+        }
+        if (!isset($pending, $success) || !$success) {
             return false;
         }
 
-        if (!$closure($cancellation)) {
-            return false;
-        }
-
         try {
-            foreach (Future::iterate($pending, $adaptedCancellation) as $future) {
+            foreach (Future::iterate($pending, $a) as $future) {
                 $future->await();
             }
-        } catch (CancelledException) {
+        } catch (CancelledException $e) {
+            $this->logger?->info('Flush cancelled, not all pending exports were awaited', [
+                'exception' => $e,
+                /** @phan-suppress-next-line PhanTypeMismatchArgumentInternal */
+                'pending_exports' => array_keys(array_intersect_key($pending, $this->pending)),
+            ]);
+
             return false;
         }
 
