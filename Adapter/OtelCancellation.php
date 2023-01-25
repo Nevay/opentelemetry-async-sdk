@@ -11,6 +11,9 @@ use Amp\DeferredCancellation;
 use Closure;
 use OpenTelemetry\SDK\Common\Future\CancellationInterface;
 
+/**
+ * @interal
+ */
 final class OtelCancellation implements Cancellation, CancellationInterface
 {
     private readonly CancellationInterface $cancellation;

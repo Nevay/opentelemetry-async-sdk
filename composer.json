@@ -1,0 +1,25 @@
+{
+    "name": "tbachert/otel-async-sdk",
+    "description": "OpenTelemetry async SDK implementation",
+    "keywords": ["opentelemetry", "otel"],
+    "type": "library",
+    "license": "Apache-2.0",
+    "require": {
+        "php": "^8.1",
+        "amphp/amp": "^3.0",
+        "open-telemetry/api": "^1.0",
+        "open-telemetry/sdk": "^1.0",
+        "revolt/event-loop": "^1.0",
+        "tbachert/otel-async-revolt-adapter": "^0.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "Nevay\\Otel\\Async\\SDK\\": ""
+        }
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-main": "0.1.x-dev"
+        }
+    }
+}

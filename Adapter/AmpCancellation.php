@@ -10,6 +10,9 @@ use Amp\Cancellation;
 use Closure;
 use OpenTelemetry\SDK\Common\Future\CancellationInterface;
 
+/**
+ * @interal
+ */
 final class AmpCancellation implements Cancellation, CancellationInterface
 {
     private readonly Cancellation $cancellation;
