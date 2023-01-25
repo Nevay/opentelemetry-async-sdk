@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace OpenTelemetry\Async\SDK\Trace\SpanProcessor;
+namespace Nevay\Otel\Async\SDK\Trace\SpanProcessor;
 
 use Amp\CancelledException;
 use Amp\DeferredFuture;
@@ -14,11 +14,11 @@ use function assert;
 use Closure;
 use function count;
 use InvalidArgumentException;
+use Nevay\Otel\Async\SDK\Adapter\AmpCancellation;
+use Nevay\Otel\Async\SDK\Adapter\OtelCancellation;
 use OpenTelemetry\API\Metrics\MeterProviderInterface;
 use OpenTelemetry\API\Metrics\ObservableCallbackInterface;
 use OpenTelemetry\API\Metrics\ObserverInterface;
-use OpenTelemetry\Async\SDK\Adapter\AmpCancellation;
-use OpenTelemetry\Async\SDK\Adapter\OtelCancellation;
 use OpenTelemetry\Context\ContextInterface;
 use OpenTelemetry\SDK\Common\Future\CancellationInterface;
 use OpenTelemetry\SDK\Common\Future\ErrorFuture;

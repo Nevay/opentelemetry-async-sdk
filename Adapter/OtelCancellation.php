@@ -4,7 +4,7 @@
 
 declare(strict_types=1);
 
-namespace OpenTelemetry\Async\SDK\Adapter;
+namespace Nevay\Otel\Async\SDK\Adapter;
 
 use Amp\Cancellation;
 use Amp\DeferredCancellation;

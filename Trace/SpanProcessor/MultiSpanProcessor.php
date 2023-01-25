@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace OpenTelemetry\Async\SDK\Trace\SpanProcessor;
+namespace Nevay\Otel\Async\SDK\Trace\SpanProcessor;
 
 use function Amp\async;
 use Amp\Future;
